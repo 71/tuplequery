@@ -1,6 +1,6 @@
 {
   "rust-analyzer.debug.engine": "vadimcn.vscode-lldb",
-  "rust-analyzer.cargo.features": ["use_hashbrown"],
+  "rust-analyzer.cargo.features": ["use_hashbrown", "datascript", "benchmark"],
   "rust-analyzer.procMacro.enable": true,
   "lldb.displayFormat": "auto",
   "lldb.showDisassembly": "never",

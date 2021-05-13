@@ -111,43 +111,48 @@ fn toposort_visit<T>(
     }
 }
 
-#[test]
-fn test_simple() {
-    // `is_edge_from(a, b)` iff string `b` appears in `a`.
-    assert_eq!(
-        toposort(vec!["c", "bc", "a", "abcd", "bcd", "b", "d"], |a, b| a
-            .contains(b)),
-        Ok(vec!["c", "b", "bc", "a", "d", "bcd", "abcd"]),
-    );
-}
+#[cfg(test)]
+mod tests {
+    use super::toposort;
 
-#[test]
-fn test_direct_cycle() {
-    // `is_edge_from(a, b)` iff number `b` is divisible by `a`.
-    assert_eq!(toposort(vec![1, 2, 1], |a, b| b % a == 0), Err(0),);
-}
-
-#[test]
-fn test_indirect_cycle() {
-    // A depends on B, B depends on C, C depends on A.
-    #[derive(Debug, PartialEq, Eq)]
-    enum V {
-        A,
-        B,
-        C,
-        D,
+    #[test]
+    fn test_simple() {
+        // `is_edge_from(a, b)` iff string `b` appears in `a`.
+        assert_eq!(
+            toposort(vec!["c", "bc", "a", "abcd", "bcd", "b", "d"], |a, b| a
+                .contains(b)),
+            Ok(vec!["c", "b", "bc", "a", "d", "bcd", "abcd"]),
+        );
     }
 
-    use V::*;
+    #[test]
+    fn test_direct_cycle() {
+        // `is_edge_from(a, b)` iff number `b` is divisible by `a`.
+        assert_eq!(toposort(vec![1, 2, 1], |a, b| b % a == 0), Err(0),);
+    }
 
-    fn is_edge_from(from: &V, to: &V) -> bool {
-        match (from, to) {
-            (A, B) => true,
-            (B, C) => true,
-            (C, A) => true,
-            _ => false,
+    #[test]
+    fn test_indirect_cycle() {
+        // A depends on B, B depends on C, C depends on A.
+        #[derive(Debug, PartialEq, Eq)]
+        enum V {
+            A,
+            B,
+            C,
+            D,
         }
-    }
 
-    assert_eq!(toposort(vec![D, B, C, A], is_edge_from), Err(1),);
+        use V::*;
+
+        fn is_edge_from(from: &V, to: &V) -> bool {
+            match (from, to) {
+                (A, B) => true,
+                (B, C) => true,
+                (C, A) => true,
+                _ => false,
+            }
+        }
+
+        assert_eq!(toposort(vec![D, B, C, A], is_edge_from), Err(1),);
+    }
 }

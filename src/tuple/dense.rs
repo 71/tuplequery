@@ -123,19 +123,19 @@ impl<T, const N: usize> DenseTuple<T, N> {
     }
 
     /// Returns an iterator over all the values of the [`DenseTuple`].
-    pub unsafe fn into_iter<'a, const M: usize>(self, fields: Bitset) -> impl Iterator<Item = Option<T>> {
+    pub unsafe fn into_iter<'a, const M: usize>(
+        self,
+        fields: Bitset,
+    ) -> impl Iterator<Item = Option<T>> {
         self.1.check_fields(&fields);
 
-        self.take()
-            .into_iter()
-            .enumerate()
-            .map(move |(i, maybe)| {
-                if fields.has(i) {
-                    Some(unsafe { maybe.assume_init() })
-                } else {
-                    None
-                }
-            })
+        self.take().into_iter().enumerate().map(move |(i, maybe)| {
+            if fields.has(i) {
+                Some(unsafe { maybe.assume_init() })
+            } else {
+                None
+            }
+        })
     }
 
     /// Returns an iterator over all the set values of the [`DenseTuple`].
@@ -331,7 +331,8 @@ impl<T: Clone + std::hash::Hash, const N: usize> HashTuple for DenseTuple<T, N> 
         unsafe {
             // SAFETY: the caller guarantees that these are the right fields.
             self.iter(fields.clone())
-        }.for_each(|t| t.hash(hasher));
+        }
+        .for_each(|t| t.hash(hasher));
     }
 }
 

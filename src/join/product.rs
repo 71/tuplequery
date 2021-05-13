@@ -348,7 +348,12 @@ impl<T: Tuple, P: TuplePool<T>> Drop for Product<T, P> {
         let mut is_iterating = true;
         let self_ptr = self as *mut Self;
 
-        for (ri, (tuples, mut start)) in self.relations.iter_mut().zip(self.indices.iter().copied()).enumerate() {
+        for (ri, (tuples, mut start)) in self
+            .relations
+            .iter_mut()
+            .zip(self.indices.iter().copied())
+            .enumerate()
+        {
             if !is_iterating {
                 start = 0;
             } else if start + 1 < tuples.len() {

@@ -8,6 +8,9 @@ pub(crate) mod helpers;
 pub mod join;
 pub mod tuple;
 
+#[cfg(feature = "datascript")]
+pub mod datascript;
+
 use std::borrow::Borrow;
 
 use crate::join::Join;
@@ -424,10 +427,7 @@ mod tests {
             for triple in triples {
                 let mut pairs = SmallVec::<[_; 3]>::new();
 
-                for (var, &val) in clause.0
-                    .iter()
-                    .zip(&[&triple.0, &triple.1, &triple.2])
-                {
+                for (var, &val) in clause.0.iter().zip(&[&triple.0, &triple.1, &triple.2]) {
                     match var {
                         ValuePattern::Cond(cond) => {
                             if !cond(val) {

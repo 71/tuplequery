@@ -2,15 +2,21 @@
 //! [DataScript](https://github.com/tonsky/datascript) to be run on arbitrary
 //! JSON objects.
 //!
-//! The program reads a JSON file from stdin and a set of clauses passed as
-//! arguments, and outputs the result of running those clauses on the JSON
-//! object.
-//!
 //! Note that the syntax of the clauses is inspired but not compatible with
 //! [DataScript](https://github.com/tonsky/datascript), which is itself
 //! inspired by [Datomic](https://www.datomic.com)'s.
-use std::{collections::HashMap, convert::TryInto, error::Error, hash::Hash};
+use std::{
+    borrow::Cow, collections::HashMap, convert::TryInto, error::Error, hash::Hash,
+    iter::FromIterator, usize,
+};
 
+use crate::{
+    tuple::{
+        dense::DenseTupleBuilder, entity::MutableEntityKeys, Bitset, CloneTuple, DenseTuple,
+        EqTuple, HashTuple, SparseTuple,
+    },
+    Query, Tuple,
+};
 use nom::{
     branch::alt,
     bytes::complete::{is_not, tag, take_while},
@@ -22,42 +28,19 @@ use nom::{
     sequence::{delimited, preceded},
     IResult,
 };
-use serde_json::Value;
-use tuplequery::{
-    tuple::{dense::DenseTupleBuilder, entity::MutableEntityKeys, Bitset, DenseTuple},
-    Query, Tuple,
-};
+use serde_json::{Number, Value};
+use smallvec::SmallVec;
 
-fn main() -> Result<(), Box<dyn Error>> {
-    // Parse clauses from command line.
-    let clauses = std::env::args()
-        .skip(1)
-        .map(|x| clause(&x).map(|x| x.1).map_err(|x| x.to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
+/// Parses a clause.
+pub fn parse_clause(input: &str) -> Result<Clause, Box<dyn Error>> {
+    clause(input).map(|x| x.1).map_err(|x| x.to_string().into())
+}
 
-    if clauses.is_empty() {
-        let name = std::env::args().next().unwrap();
-
-        eprintln!(r#"
-USAGE:
-    command | {} [CLAUSES ...]
-
-EXAMPLE:
-    curl file.json | {} '?a "age" ?age' '?b "age" ?age'"#, name, name);
-
-        std::process::exit(1);
-    }
-
-    // Parse input object from stdin.
-    let value = serde_json::from_reader(std::io::stdin())?;
-
-    // Convert input object into triples.
-    let root = Val::Entity(&value);
-    let root_prop = Val::Str("root".into());
-    let mut triples = Vec::new();
-
-    value_to_triples(root, root_prop, &value, &mut triples);
-
+/// Runs a query built on the given clauses using the given triples.
+pub fn query<'a, T: SupportedTuple<'a>>(
+    clauses: Vec<Clause>,
+    triples: &[Triple<'a>],
+) -> Result<(Vec<T>, Query<T>, HashMap<String, usize>), Box<dyn Error>> {
     // Build clauses.
     let mut relations = Vec::with_capacity(clauses.len());
     let mut variables = HashMap::<String, usize>::new();
@@ -81,8 +64,9 @@ EXAMPLE:
                 let mut bitset = None;
                 let mut relation = Vec::new();
 
-                for triple in &triples {
-                    let mut tuple_builder = DenseTupleBuilder::new();
+                for triple in triples {
+                    let mut tuple = SmallVec::<[Option<Val<'a>>; 3]>::with_capacity(3);
+                    let mut tuple_bitset = Bitset::new();
                     let mut is_match = true;
 
                     for (val, pat) in triple.iter().zip(&patterns) {
@@ -100,7 +84,14 @@ EXAMPLE:
                                 // Assign to variable.
                                 let index = variables.find_index_or_insert(var.clone());
 
-                                tuple_builder.set(index, val.clone());
+                                if tuple.len() <= index {
+                                    tuple.resize_with(index, || None);
+                                    tuple.push(Some(val.clone()));
+                                } else {
+                                    tuple[index] = Some(val.clone());
+                                }
+
+                                tuple_bitset.on(index);
                             }
                             _ => {
                                 is_match = false;
@@ -111,17 +102,21 @@ EXAMPLE:
                     }
 
                     if is_match {
-                        let (tuple, tuple_bitset) = tuple_builder.build();
-
                         if bitset.is_none() {
                             bitset = Some(tuple_bitset);
                         }
 
-                        relation.push(tuple);
+                        relation.push(tuple.into_iter().collect());
                     }
                 }
 
-                BuiltClause::Triples(relation, bitset.unwrap())
+                let bitset = if let Some(bitset) = bitset {
+                    bitset
+                } else {
+                    continue;
+                };
+
+                BuiltClause::Triples(relation, bitset)
             }
             Clause::Where(mut expr) => {
                 let mut bitset = Bitset::new();
@@ -136,37 +131,107 @@ EXAMPLE:
     }
 
     // Build query.
-    let query = Query::new::<BuiltClause, _, _>(relations.iter())?;
+    let query = Query::new::<BuiltClause<T>, _, _>(relations.iter())?;
 
     // Run query.
-    let results = query.run(relations, tuplequery::Hash::new())?;
+    let results = query.run(relations, crate::Hash::new())?.collect();
 
-    // Display query results.
-    for mut result_tuple in results {
-        // SAFETY: the fieldset is returned by the `query`, so it is valid to
-        // access tuple values with it.
-        let result = variables
-            .iter()
-            .map(|(name, idx)| (name, unsafe { result_tuple.get(*idx, query.fields()) }.unwrap()))
-            .collect::<HashMap<_, _>>();
+    Ok((results, query, variables))
+}
 
-        println!("{:?}", result);
+pub trait SupportedTuple<'a>:
+    Tuple<FieldSet = Bitset> + CloneTuple + EqTuple + HashTuple + FromIterator<Option<Val<'a>>> + 'a
+{
+    fn assign_at(&mut self, index: usize, self_fields: &Bitset, value: Val<'a>);
+    fn value_at(&self, index: usize, self_fields: &Bitset) -> Option<&Val<'a>>;
 
-        result_tuple.clear(query.fields());
+    fn to_json(mut self, self_fields: &Bitset, variables: &HashMap<String, usize>) -> Value {
+        let result = Value::Object(
+            variables
+                .iter()
+                .map(|(name, idx)| {
+                    (
+                        name.to_owned(),
+                        self.value_at(*idx, self_fields).unwrap().clone().to_json(),
+                    )
+                })
+                .collect(),
+        );
+
+        self.clear(self_fields);
+
+        result
+    }
+}
+
+impl<'a, const N: usize> SupportedTuple<'a> for DenseTuple<Val<'a>, N> {
+    fn assign_at(&mut self, index: usize, self_fields: &Bitset, value: Val<'a>) {
+        let mut assigned_tuple_builder = DenseTupleBuilder::new();
+
+        assigned_tuple_builder.set(index, value);
+
+        let (assigned_tuple, assigned_bitset) = assigned_tuple_builder.build();
+
+        self.merge_owned(assigned_tuple, self_fields, &assigned_bitset);
     }
 
-    Ok(())
+    fn value_at(&self, index: usize, self_fields: &Bitset) -> Option<&Val<'a>> {
+        // SAFETY: we assume that the given fields correspond to the tuple.
+        unsafe { self.get(index, self_fields) }
+    }
+}
+
+impl<'a, const N: usize> SupportedTuple<'a> for SparseTuple<Val<'a>, N> {
+    fn assign_at(&mut self, index: usize, self_fields: &Bitset, value: Val<'a>) {
+        let mut assigned_tuple = SmallVec::<[_; 4]>::with_capacity(index + 1);
+        let mut assigned_bitset = Bitset::new();
+
+        assigned_tuple.resize_with(index, || None);
+        assigned_tuple.push(Some(value));
+
+        assigned_bitset.on(index);
+
+        self.merge_owned(
+            assigned_tuple.into_iter().collect(),
+            self_fields,
+            &assigned_bitset,
+        );
+    }
+
+    fn value_at(&self, index: usize, self_fields: &Bitset) -> Option<&Val<'a>> {
+        self.get(self_fields, index)
+    }
+}
+
+impl<'a, const N: usize> SupportedTuple<'a> for SmallVec<[Option<Val<'a>>; N]> {
+    fn assign_at(&mut self, index: usize, _self_fields: &Bitset, value: Val<'a>) {
+        self[index] = Some(value);
+    }
+
+    fn value_at(&self, index: usize, _self_fields: &Bitset) -> Option<&Val<'a>> {
+        self.get(index)?.as_ref()
+    }
+}
+
+impl<'a> SupportedTuple<'a> for Vec<Option<Val<'a>>> {
+    fn assign_at(&mut self, index: usize, _self_fields: &Bitset, value: Val<'a>) {
+        self[index] = Some(value);
+    }
+
+    fn value_at(&self, index: usize, _self_fields: &Bitset) -> Option<&Val<'a>> {
+        self.get(index)?.as_ref()
+    }
 }
 
 /// A built [`Clause`] with variables resolved to numbers, triples converted to
 /// [`DenseTuple`]s, and clause [`Bitset`]s resolved.
-enum BuiltClause<'a> {
+enum BuiltClause<T> {
     Assign(usize, Bitset, Expr),
-    Triples(Vec<DenseTuple<Val<'a>, 3>>, Bitset),
+    Triples(Vec<T>, Bitset),
     Where(Expr, Bitset),
 }
 
-impl<'a> tuplequery::Clause<DenseTuple<Val<'a>, 3>> for BuiltClause<'a> {
+impl<'a, T: SupportedTuple<'a>> crate::Clause<T> for BuiltClause<T> {
     fn input_variables(&self) -> Bitset {
         match self {
             BuiltClause::Assign(_, vars, _) => vars.clone(),
@@ -190,36 +255,30 @@ impl<'a> tuplequery::Clause<DenseTuple<Val<'a>, 3>> for BuiltClause<'a> {
 
     fn transform_boxed<'b>(
         self,
-        input: Box<dyn Iterator<Item = DenseTuple<Val<'a>, 3>> + 'b>,
+        input: Box<dyn Iterator<Item = T> + 'b>,
         all_variables: Bitset,
-    ) -> Box<dyn Iterator<Item = DenseTuple<Val<'a>, 3>> + 'b>
+    ) -> Box<dyn Iterator<Item = T> + 'b>
     where
         Self: 'b,
-        DenseTuple<Val<'a>, 3>: 'b,
+        T: 'b,
         Bitset: 'b,
     {
         match self {
             BuiltClause::Assign(i, vars, expr) => Box::new(input.map(move |mut tuple| {
-                let mut assigned_tuple_builder = DenseTupleBuilder::new();
-
-                assigned_tuple_builder.set(i, expr.eval(&tuple, &vars));
-
-                let (assigned_tuple, assigned_bitset) = assigned_tuple_builder.build();
-
-                tuple.merge_owned(assigned_tuple, &all_variables, &assigned_bitset);
+                tuple.assign_at(i, &all_variables, expr.eval(&tuple, &vars));
                 tuple
             })),
             BuiltClause::Triples(triples, _) => Box::new(triples.into_iter()),
             BuiltClause::Where(expr, vars) => {
-                Box::new(input.filter(move |tuple| expr.eval(&tuple, &vars).is_truthy()))
+                Box::new(input.filter(move |tuple| expr.eval(tuple, &vars).is_truthy()))
             }
         }
     }
 
-    fn transform_empty<'b>(self) -> Box<dyn Iterator<Item = DenseTuple<Val<'a>, 3>> + 'b>
+    fn transform_empty<'b>(self) -> Box<dyn Iterator<Item = T> + 'b>
     where
         Self: 'b,
-        DenseTuple<Val<'a>, 3>: 'b,
+        T: 'b,
         Bitset: 'b,
     {
         if let BuiltClause::Triples(triples, _) = self {
@@ -231,10 +290,10 @@ impl<'a> tuplequery::Clause<DenseTuple<Val<'a>, 3>> for BuiltClause<'a> {
 }
 
 /// A value of a [`Triple`].
-#[derive(Debug, Clone, PartialEq)]
-enum Val<'a> {
-    Entity(&'a Value),
-    Str(String),
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+pub enum Val<'a> {
+    Entity(usize),
+    Str(Cow<'a, str>),
     Num(f64),
     Null,
     Bool(bool),
@@ -282,14 +341,22 @@ impl<'a> Val<'a> {
             Val::Bool(v) => *v,
         }
     }
+
+    fn to_json(self) -> Value {
+        match self {
+            Val::Entity(n) => Value::String(format!("entity #{}", n)),
+            Val::Str(s) => Value::String(s.to_string()),
+            Val::Num(v) => Value::Number(Number::from_f64(v).unwrap()),
+            Val::Null => Value::Null,
+            Val::Bool(v) => Value::Bool(v),
+        }
+    }
 }
 
 /// A triple of [`Val`]s.
-type Triple<'a> = [Val<'a>; 3];
+pub type Triple<'a> = [Val<'a>; 3];
 
-/// Converts a JSON [`Value`] into a collection of [`Triple`]s that represent
-/// that object and that can be queried.
-fn value_to_triples<'a>(
+fn write_value_to_triples<'a>(
     entity: Val<'a>,
     prop: Val<'a>,
     value: &'a Value,
@@ -299,31 +366,49 @@ fn value_to_triples<'a>(
         Value::Null => triples.push([entity, prop, Val::Null]),
         Value::Bool(bool) => triples.push([entity, prop, Val::Bool(*bool)]),
         Value::Number(number) => triples.push([entity, prop, Val::Num(number.as_f64().unwrap())]),
-        Value::String(string) => triples.push([entity, prop, Val::Str(string.clone())]),
+        Value::String(string) => triples.push([entity, prop, Val::Str(Cow::Borrowed(string))]),
         Value::Array(array) => {
-            let array_entity = Val::Entity(value);
+            let array_entity = Val::Entity(triples.len());
 
             triples.push([entity, prop, array_entity.clone()]);
 
             for (i, v) in array.iter().enumerate() {
-                value_to_triples(array_entity.clone(), Val::Num(i as f64), v, triples);
+                write_value_to_triples(array_entity.clone(), Val::Num(i as f64), v, triples);
             }
         }
         Value::Object(object) => {
-            let object_entity = Val::Entity(value);
+            let object_entity = Val::Entity(triples.len());
 
             triples.push([entity, prop, object_entity.clone()]);
 
             for (k, v) in object {
-                value_to_triples(object_entity.clone(), Val::Str(k.clone()), v, triples);
+                write_value_to_triples(
+                    object_entity.clone(),
+                    Val::Str(Cow::Borrowed(k)),
+                    v,
+                    triples,
+                );
             }
         }
     }
 }
 
+/// Converts a JSON [`Value`] into a collection of [`Triple`]s that represent
+/// that object and that can be queried, and writes them to the given vector.
+pub fn value_to_triples<'a>(value: &'a Value) -> Vec<Triple<'a>> {
+    let root = Val::Entity(0);
+    let root_prop = Val::Str("root".into());
+
+    let mut triples = Vec::new();
+
+    write_value_to_triples(root, root_prop, value, &mut triples);
+
+    triples
+}
+
 /// An expression in a [`Clause`].
 #[derive(Debug, Clone, PartialEq)]
-enum Expr {
+pub enum Expr {
     Eq(Box<Expr>, Box<Expr>),
     Var(String, usize),
     Bool(bool),
@@ -346,21 +431,20 @@ impl Expr {
         }
     }
 
-    fn eval<'a>(&self, tuple: &DenseTuple<Val<'a>, 3>, fields: &Bitset) -> Val<'a> {
-        // SAFETY: we assume that the given fields correspond to the tuple.
+    fn eval<'a, T: SupportedTuple<'a>>(&self, tuple: &T, fields: &Bitset) -> Val<'a> {
         match self {
             Expr::Eq(a, b) => Val::Bool(a.eval(tuple, fields) == b.eval(tuple, fields)),
-            Expr::Var(_, i) => unsafe { tuple.get(*i, fields) }.unwrap().clone(),
+            Expr::Var(_, i) => tuple.value_at(*i, fields).unwrap().clone(),
             Expr::Bool(v) => Val::Bool(*v),
             Expr::Num(v) => Val::Num(*v),
-            Expr::Str(v) => Val::Str(v.clone()),
+            Expr::Str(v) => Val::Str(Cow::Owned(v.clone())),
         }
     }
 }
 
 /// A pattern to match on in a [`Clause::Triple`].
-#[derive(Debug)]
-enum Pat {
+#[derive(Debug, Clone)]
+pub enum Pat {
     Var(String),
     EqBool(bool),
     EqNum(f64),
@@ -368,8 +452,8 @@ enum Pat {
 }
 
 /// A clause of a query.
-#[derive(Debug)]
-enum Clause {
+#[derive(Debug, Clone)]
+pub enum Clause {
     Triple([Pat; 3]),
     Assign(String, Expr),
     Where(Expr),

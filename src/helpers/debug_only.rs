@@ -9,6 +9,7 @@ pub struct DebugOnly<T>(T);
 pub struct DebugOnly<T>(std::marker::PhantomData<*const T>);
 
 impl<T> From<T> for DebugOnly<T> {
+    #[cfg_attr(not(debug_assertions), allow(unused_variables))]
     fn from(value: T) -> Self {
         #[cfg(not(debug_assertions))]
         let value = std::marker::PhantomData;
@@ -18,6 +19,7 @@ impl<T> From<T> for DebugOnly<T> {
 }
 
 #[allow(dead_code)]
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
 impl<T> DebugOnly<T> {
     /// Creates a new [`DebugOnly`] wrapper. In release builds, this is
     /// equivalent to `drop(value)`.
