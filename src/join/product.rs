@@ -46,6 +46,7 @@ impl<T: Tuple + CloneTuple> Product<T, ()> {
 impl<T: Tuple, P: TuplePool<T>> Product<T, P> {
     /// Same as [`Self::new`], but also allows an explicit [`TuplePool`] to be
     /// given.
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(relations, pool)))]
     pub fn with_pool(relations: impl IntoIterator<Item = (T::FieldSet, Vec<T>)>, pool: P) -> Self {
         // Split input pairs into relations and their corresponding FieldSets.
         let pairs = relations.into_iter();
@@ -168,7 +169,7 @@ impl<T: Tuple, P: TuplePool<T>> Iterator for Product<T, P> {
 
     /// Returns the next result of the product. For a guided explanation of how
     /// this function works, see [`tests::test_guided`].
-    #[tracing::instrument(skip(self))]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self)))]
     fn next(&mut self) -> Option<Self::Item> {
         debug_assert_eq!(self.relations.len(), self.indices.len());
 
@@ -259,16 +260,31 @@ impl<T: Tuple, P: TuplePool<T>> Iterator for Product<T, P> {
         Some(tuple)
     }
 
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self)))]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let mut len = 1;
-        let mut remove_len = 0;
+        let mut i = 0;
 
-        for (relation, &index) in self.relations.iter().zip(self.indices.iter()).rev() {
-            remove_len += len * index;
-            len *= relation.len();
+        while i < self.relations.len() {
+            let relation = &self.relations[i];
+            let index = self.indices[i];
+
+            if index != relation.len() - 1 {
+                // Not the last item.
+                break;
+            }
+
+            len *= relation.len() - index;
+            i += 1;
         }
 
-        (len - remove_len, Some(len - remove_len))
+        while i < self.relations.len() {
+            len *= self.relations[i].len();
+            len -= self.indices[i];
+            i += 1;
+        }
+
+        (len, Some(len))
     }
 }
 
@@ -287,6 +303,7 @@ impl<T: Tuple, P: TuplePool<T>> HasFieldSet for Product<T, P> {
 impl<T: Tuple, P: TuplePool<T>> ExactSizeIterator for Product<T, P> {}
 
 impl<T: Tuple, P: Clone + TuplePool<T>> Clone for Product<T, P> {
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self)))]
     fn clone(&self) -> Self {
         let mut pool = self.pool.clone();
         let mut relations = ProductVec::with_capacity(self.relations.len());
@@ -345,6 +362,7 @@ impl<T: Tuple, P: Clone + TuplePool<T>> Clone for Product<T, P> {
 }
 
 impl<T: Tuple, P: TuplePool<T>> Drop for Product<T, P> {
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self)))]
     fn drop(&mut self) {
         let mut is_iterating = true;
         let self_ptr = self as *mut Self;

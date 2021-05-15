@@ -4,10 +4,15 @@
 //!
 //! See the [`crate::datascript`] module for more information.
 
-use std::{borrow::Cow, convert::TryInto, error::Error};
+use std::{convert::TryInto, error::Error};
 
 use serde_json::Value;
-use tuplequery::{datascript::{SupportedTuple, Val, parse_clause, query, value_to_triples}, tuple::DenseTuple};
+#[cfg(feature = "trace")]
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tuplequery::{
+    datascript::{parse_clause, query, value_to_triples, SupportedTuple, Val},
+    tuple::DenseTuple,
+};
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Parse clauses from command line.
@@ -19,8 +24,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         args.remove(0);
     }
 
-    let clauses = args.into_iter()
-        .map(|x| parse_clause(&x))
+    let clauses = args
+        .iter()
+        .map(|x| parse_clause(x))
         .collect::<Result<Vec<_>, _>>()?;
 
     if clauses.is_empty() {
@@ -39,22 +45,37 @@ EXAMPLE:
         std::process::exit(1);
     }
 
+    #[cfg(feature = "trace")]
+    let (flame_layer, guard) = tracing_flame::FlameLayer::with_file("./tracing.folded").unwrap();
+    #[cfg(feature = "trace")]
+    tracing_subscriber::registry().with(flame_layer).init();
+    #[cfg(feature = "trace")]
+    let span = tracing::span!(tracing::Level::TRACE, "parse input").entered();
+
     // Parse input triples from stdin.
-    #[allow(unused_assignments)]  // Needed to extend lifetime of value.
-    let mut value = None;
+    #[allow(unused_assignments)] // Needed to extend lifetime of value.
+    let (mut records, mut value) = (Vec::new(), None);
 
     let triples = if read_csv {
-        let mut records = Vec::new();
-        let mut reader = csv::Reader::from_reader(std::io::stdin());
+        records = csv::Reader::from_reader(std::io::stdin())
+            .records()
+            .collect::<Result<Vec<_>, _>>()?;
 
-        for (i, record) in reader.records().enumerate() {
-            let record = record?.into_iter().map(|x| Val::Str(Cow::Owned(x.to_string()))).collect::<Vec<_>>();
+        let mut triples = Vec::new();
+
+        for (i, record) in records.iter().enumerate() {
+            let record = record.iter().map(|x| Val::Str(x)).collect::<Vec<_>>();
             let record_len = record.len();
 
-            records.push(record.try_into().map_err(move |_| format!("expected record #{} to have 3 values; it had {}", i, record_len))?);
+            triples.push(record.try_into().map_err(move |_| {
+                format!(
+                    "expected record #{} to have 3 values; it had {}",
+                    i, record_len
+                )
+            })?);
         }
 
-        records
+        triples
     } else {
         // Convert input object into triples.
         value = Some(serde_json::from_reader(std::io::stdin())?);
@@ -62,12 +83,38 @@ EXAMPLE:
         value_to_triples(value.as_ref().unwrap())
     };
 
+    #[cfg(feature = "trace")]
+    drop(span);
+    #[cfg(feature = "trace")]
+    let span = tracing::span!(tracing::Level::TRACE, "query").entered();
+
     // Run query.
+    #[cfg(feature = "trace")]
+    let time = std::time::Instant::now();
+
     let (results, query, variables) = query::<DenseTuple<_, 3>>(clauses, &triples)?;
-    let json_results = results.into_iter().map(|x| x.to_json(query.fields(), &variables)).collect();
+
+    #[cfg(feature = "trace")]
+    eprintln!("query execution time: {:?}", time.elapsed());
+
+    #[cfg(feature = "trace")]
+    drop(span);
+    #[cfg(feature = "trace")]
+    let span = tracing::span!(tracing::Level::TRACE, "convert results").entered();
+
+    let json_results = results
+        .into_iter()
+        .map(|x| x.to_json(query.fields(), &variables))
+        .collect();
+
+    #[cfg(feature = "trace")]
+    drop(span);
 
     // Display query results.
     serde_json::to_writer(std::io::stdout(), &Value::Array(json_results)).unwrap();
+
+    #[cfg(feature = "trace")]
+    drop(guard);
 
     Ok(())
 }

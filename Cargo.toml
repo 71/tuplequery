@@ -10,14 +10,15 @@ license = "ISC"
 hashbrown = { version = "0.9", optional = true }
 smallvec = { version = "1.6", features = ["const_generics", "union"] }
 thiserror = "1.0"
-tracing = "0.1"
-tracing-flame = "0.1"
-tracing-subscriber = "0.2"
 
 csv = { version = "1.1", optional = true }
 nom = { version = "6.1", optional = true }
 rusqlite = { version = "0.25", optional = true, features = ["bundled"] }
 serde_json = { version = "1.0", optional = true }
+
+tracing = { version = "0.1", optional = true }
+tracing-flame = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.2", optional = true }
 
 crates-index = { version = "0.16", optional = true }
 
@@ -31,6 +32,7 @@ criterion = "0.3"
 use_hashbrown = ["hashbrown"]
 datascript = ["csv", "nom", "serde_json"]
 benchmark = ["crates-index", "rusqlite"]
+trace = ["tracing", "tracing-flame", "tracing-subscriber"]
 
 [lib]
 bench = false
@@ -43,4 +45,4 @@ bench = false
 [[bench]]
 name = "benchmark"
 harness = false
-required-features = ["datascript", "benchmark"]
+required-features = ["benchmark", "datascript"]

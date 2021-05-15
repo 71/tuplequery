@@ -24,6 +24,7 @@ impl<T: OrdTuple, P: Clone + TuplePool<T>, I1: Iterator<Item = T>, I2: Iterator<
     Join<T, P, I1, I2> for Merge
 {
     type Iter = MergeJoin<T, P, I1, I2>;
+    type IterSame = MergeJoin<T, P, I1, I1>;
     type ProductIter = MergeJoin<T, P, I1, Product<T, P>>;
 
     fn join(
@@ -34,6 +35,17 @@ impl<T: OrdTuple, P: Clone + TuplePool<T>, I1: Iterator<Item = T>, I2: Iterator<
         fields2: T::FieldSet,
         pool: P,
     ) -> Self::Iter {
+        MergeJoin::with_pool(iter1, iter2, fields1, fields2, pool)
+    }
+
+    fn join_same(
+        &self,
+        iter1: I1,
+        iter2: I1,
+        fields1: T::FieldSet,
+        fields2: T::FieldSet,
+        pool: P,
+    ) -> Self::IterSame {
         MergeJoin::with_pool(iter1, iter2, fields1, fields2, pool)
     }
 
@@ -126,7 +138,7 @@ impl<T: OrdTuple, P: TuplePool<T>, I1: Iterator<Item = T>, I2: Iterator<Item = T
 {
     type Item = T;
 
-    #[tracing::instrument(skip(self))]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self)))]
     fn next(&mut self) -> Option<Self::Item> {
         // If some values are pending, return their cartesian product.
         if let Some(pending1) = self.pending1.last() {

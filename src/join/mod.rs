@@ -9,10 +9,13 @@ use crate::tuple::{HasFieldSet, Tuple, TuplePool};
 /// An interface for iterators that can be joined based on some common values
 /// in a [`Tuple`].
 pub trait Join<T: Tuple, P: TuplePool<T>, I1: Iterator<Item = T>, I2: Iterator<Item = T>> {
-    /// The type of the iterator returned by [`join`].
+    /// The type of the iterator returned by [`Self::join`].
     type Iter: Iterator<Item = T> + HasFieldSet<FieldSet = T::FieldSet>;
 
-    /// The type of the iterator returned by [`join_product`].
+    /// The type of the iterator returned by [`Self::join_same`].
+    type IterSame: Iterator<Item = T> + HasFieldSet<FieldSet = T::FieldSet>;
+
+    /// The type of the iterator returned by [`Self::join_product`].
     type ProductIter: Iterator<Item = T> + HasFieldSet<FieldSet = T::FieldSet>;
 
     /// Returns an iterator that produces the inner join between the tuples
@@ -30,7 +33,18 @@ pub trait Join<T: Tuple, P: TuplePool<T>, I1: Iterator<Item = T>, I2: Iterator<I
         pool: P,
     ) -> Self::Iter;
 
-    /// Same as [`join`], but with a product of relations on the right side.
+    /// Same as [`Self::join`], but with two iterators of the same type.
+    fn join_same(
+        &self,
+        iter1: I1,
+        iter2: I1,
+        fields1: T::FieldSet,
+        fields2: T::FieldSet,
+        pool: P,
+    ) -> Self::IterSame;
+
+    /// Same as [`Self::join`], but with a product of relations on the right
+    /// side.
     fn join_product(
         &self,
         iter1: I1,

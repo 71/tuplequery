@@ -88,6 +88,7 @@ impl<T: Tuple> Query<T> {
 
     /// Creates a query. The query can then be run with [`Self::run`] or
     /// [`Self::run_with`].
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(clauses)))]
     pub fn new<'a, R: Clause<T>, BR: Borrow<R>, II: IntoIterator<Item = BR>>(
         clauses: II,
     ) -> Result<Self, QueryPrepareError>
@@ -212,6 +213,10 @@ impl<T: Tuple> Query<T> {
     ///
     /// Relations in `input` must be given in the same order as the ones passed
     /// to [`Self::prepare`], and must have equivalent [`FieldSet`]s.
+    #[cfg_attr(
+        feature = "trace",
+        tracing::instrument(skip(self, input, joiner, pool))
+    )]
     pub fn run_with<
         'a,
         R: Clause<T>,
@@ -227,7 +232,7 @@ impl<T: Tuple> Query<T> {
         T: 'a,
         P: 'a,
         R: 'a,
-        J::Iter: 'a,
+        J::IterSame: 'a,
         J::ProductIter: 'a,
     {
         // Collect and check input relations.
@@ -293,7 +298,7 @@ impl<T: Tuple> Query<T> {
                     let (fieldset, iter) = if right_relations.len() == 1 {
                         let (right_fieldset, right_iter) = right_relations.pop().unwrap();
                         let union_fieldset = left_fieldset.union(&right_fieldset);
-                        let join = joiner.join(
+                        let join = joiner.join_same(
                             left_iter,
                             right_iter,
                             left_fieldset,

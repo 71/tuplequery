@@ -35,7 +35,7 @@ pub struct DenseTuple<T, const N: usize>(SmallVec<[MaybeUninit<T>; N]>, DebugFie
 
 impl<T, const N: usize> DenseTuple<T, N> {
     /// Creates a new empty [`DenseTuple`].
-    #[tracing::instrument]
+    #[cfg_attr(feature = "tracing", tracing::instrument)]
     pub fn new(size: usize) -> Self {
         DenseTuple(
             std::iter::repeat_with(MaybeUninit::uninit)
@@ -47,8 +47,7 @@ impl<T, const N: usize> DenseTuple<T, N> {
 
     fn take(mut self) -> SmallVec<[MaybeUninit<T>; N]> {
         self.1.clear_fields();
-
-        std::mem::replace(&mut self.0, SmallVec::new())
+        self.0
     }
 
     /// Extracts the values set in the [`DenseTuple`].
@@ -62,10 +61,7 @@ impl<T, const N: usize> DenseTuple<T, N> {
             // SAFETY: if all elements are initialized,
             // `SmallVec<[MaybeUninit<T>; N]>` and `SmallVec<[T; N]>` are
             // equivalent.
-            return underlying
-                .into_iter()
-                .map(|x| x.assume_init())
-                .collect();
+            return underlying.into_iter().map(|x| x.assume_init()).collect();
         }
 
         let mut values = SmallVec::with_capacity(values_cnt);
@@ -140,7 +136,7 @@ impl<T, const N: usize> DenseTuple<T, N> {
     }
 
     /// Returns an iterator over all the set values of the [`DenseTuple`].
-    pub unsafe fn iter(&self, fields: Bitset) -> impl Iterator<Item = &T> + '_ {
+    pub unsafe fn iter(&self, fields: &Bitset) -> impl Iterator<Item = &T> + '_ {
         self.1.check_fields_subset(&fields);
 
         fields.iter().map(move |i| &*self.0[i].as_ptr())
@@ -148,12 +144,10 @@ impl<T, const N: usize> DenseTuple<T, N> {
 
     /// Returns an iterator over all the set values of the [`DenseTuple`]
     /// (using mutable references).
-    pub unsafe fn iter_mut(&mut self, fields: Bitset) -> impl Iterator<Item = &mut T> + '_ {
+    pub unsafe fn iter_mut(&mut self, fields: &Bitset) -> impl Iterator<Item = &mut T> + '_ {
         self.1.check_fields_subset(&fields);
 
-        fields
-            .iter()
-            .map(move |i| &mut *self.0[i].as_mut_ptr())
+        fields.iter().map(move |i| &mut *self.0[i].as_mut_ptr())
     }
 
     /// Returns a reference to the tuple that can be printed.
@@ -176,7 +170,10 @@ impl<T, const N: usize> Default for DenseTuple<T, N> {
 impl<T: Clone, const N: usize> Tuple for DenseTuple<T, N> {
     type FieldSet = Bitset;
 
-    #[tracing::instrument(skip(self, other, self_fields, other_fields))]
+    #[cfg_attr(
+        feature = "trace",
+        tracing::instrument(skip(self, other, self_fields, other_fields))
+    )]
     fn merge(&mut self, other: &Self, self_fields: &Self::FieldSet, other_fields: &Self::FieldSet)
     where
         T: Clone,
@@ -191,6 +188,10 @@ impl<T: Clone, const N: usize> Tuple for DenseTuple<T, N> {
 
             if !self_fields.has(i) {
                 // SAFETY: the field is initialized.
+                if i >= self.0.len() {
+                    self.0.resize_with(i + 1, MaybeUninit::uninit);
+                }
+
                 self.0[i] = MaybeUninit::new(unsafe { &*value.as_ptr() }.clone());
             }
         }
@@ -198,7 +199,10 @@ impl<T: Clone, const N: usize> Tuple for DenseTuple<T, N> {
         self.1.merge_fields(other_fields);
     }
 
-    #[tracing::instrument(skip(self, other, self_fields, other_fields))]
+    #[cfg_attr(
+        feature = "trace",
+        tracing::instrument(skip(self, other, self_fields, other_fields))
+    )]
     fn merge_owned(
         &mut self,
         other: Self,
@@ -217,8 +221,8 @@ impl<T: Clone, const N: usize> Tuple for DenseTuple<T, N> {
                 // SAFETY: the field is initialized.
                 unsafe { std::ptr::drop_in_place(value.as_mut_ptr()) };
             } else {
-                while i >= self.0.len() {
-                    self.0.push(MaybeUninit::uninit());
+                if i >= self.0.len() {
+                    self.0.resize_with(i + 1, MaybeUninit::uninit);
                 }
 
                 self.0[i] = value;
@@ -228,7 +232,10 @@ impl<T: Clone, const N: usize> Tuple for DenseTuple<T, N> {
         self.1.merge_fields(other_fields);
     }
 
-    #[tracing::instrument(skip(self, other, self_fields, other_fields))]
+    #[cfg_attr(
+        feature = "trace",
+        tracing::instrument(skip(self, other, self_fields, other_fields))
+    )]
     fn merge_no_overlap(
         &mut self,
         other: &Self,
@@ -256,7 +263,10 @@ impl<T: Clone, const N: usize> Tuple for DenseTuple<T, N> {
         self.1.merge_fields(other_fields);
     }
 
-    #[tracing::instrument(skip(self, other, self_fields, other_fields))]
+    #[cfg_attr(
+        feature = "trace",
+        tracing::instrument(skip(self, other, self_fields, other_fields))
+    )]
     fn merge_owned_no_overlap(
         &mut self,
         other: Self,
@@ -283,21 +293,22 @@ impl<T: Clone, const N: usize> Tuple for DenseTuple<T, N> {
         self.1.merge_fields(other_fields);
     }
 
-    #[tracing::instrument(skip(self, fields))]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self, fields)))]
     fn clear(&mut self, fields: &Self::FieldSet) {
         self.1.check_fields(fields);
 
-        for index in fields.iter() {
+        fields.for_each(|i| {
             // SAFETY: we're only accessing initialized fields.
-            unsafe { std::ptr::drop_in_place(self.0[index].as_mut_ptr()) };
-        }
+            unsafe { std::ptr::drop_in_place(self.0[i].as_mut_ptr()) };
+            true
+        });
 
         self.1.clear_fields();
     }
 }
 
 impl<T: Clone + Eq, const N: usize> EqTuple for DenseTuple<T, N> {
-    #[tracing::instrument(skip(self, other, fields))]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self, other, fields)))]
     fn eq(&self, other: &Self, fields: &Self::FieldSet) -> bool {
         self.1.check_fields_subset(fields);
         other.1.check_fields_subset(fields);
@@ -309,7 +320,7 @@ impl<T: Clone + Eq, const N: usize> EqTuple for DenseTuple<T, N> {
 }
 
 impl<T: Clone + Ord, const N: usize> OrdTuple for DenseTuple<T, N> {
-    #[tracing::instrument(skip(self, other, fields))]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self, other, fields)))]
     fn cmp(&self, other: &Self, fields: &Self::FieldSet) -> Ordering {
         self.1.check_fields_subset(fields);
         other.1.check_fields_subset(fields);
@@ -333,20 +344,16 @@ impl<T: Clone + Ord, const N: usize> OrdTuple for DenseTuple<T, N> {
 }
 
 impl<T: Clone + std::hash::Hash, const N: usize> HashTuple for DenseTuple<T, N> {
-    #[tracing::instrument(skip(self, fields, hasher))]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self, fields, hasher)))]
     fn hash<H: std::hash::Hasher>(&self, fields: &Self::FieldSet, hasher: &mut H) {
         self.1.check_fields_subset(fields);
 
-        unsafe {
-            // SAFETY: the caller guarantees that these are the right fields.
-            self.iter(fields.clone())
-        }
-        .for_each(|t| t.hash(hasher));
+        unsafe { self.iter(fields) }.for_each(|t| t.hash(hasher));
     }
 }
 
 impl<T: Clone, const N: usize> CloneTuple for DenseTuple<T, N> {
-    #[tracing::instrument(skip(self, fields))]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self, fields)))]
     fn clone(&self, fields: &Self::FieldSet) -> Self {
         self.1.check_fields_subset(fields);
 
@@ -366,7 +373,7 @@ impl<T: Clone, const N: usize> CloneTuple for DenseTuple<T, N> {
 }
 
 impl<T, const N: usize> From<&mut [Option<T>]> for DenseTuple<T, N> {
-    #[tracing::instrument(skip(values))]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(values)))]
     fn from(values: &mut [Option<T>]) -> Self {
         let mut bitset = Bitset::new();
         let smallvec = values
@@ -388,7 +395,7 @@ impl<T, const N: usize> From<&mut [Option<T>]> for DenseTuple<T, N> {
 }
 
 impl<T, const N: usize> FromIterator<Option<T>> for DenseTuple<T, N> {
-    #[tracing::instrument(skip(iter))]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(iter)))]
     fn from_iter<I: IntoIterator<Item = Option<T>>>(iter: I) -> Self {
         let mut bitset = Bitset::new();
         let smallvec = iter
@@ -408,7 +415,7 @@ impl<T, const N: usize> FromIterator<Option<T>> for DenseTuple<T, N> {
 }
 
 impl<K, V, const N: usize> FromEntity<K, V> for DenseTuple<V, N> {
-    #[tracing::instrument(skip(keys, fields))]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(keys, fields)))]
     fn from_entity(
         keys: impl EntityKeys<Key = K>,
         fields: impl IntoIterator<Item = (K, V)>,
@@ -418,7 +425,7 @@ impl<K, V, const N: usize> FromEntity<K, V> for DenseTuple<V, N> {
         ))
     }
 
-    #[tracing::instrument(skip(keys, fields))]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(keys, fields)))]
     fn from_entity_with_mut_keys(
         keys: impl MutableEntityKeys<Key = K>,
         fields: impl IntoIterator<Item = (K, V)>,
@@ -430,7 +437,7 @@ impl<K, V, const N: usize> FromEntity<K, V> for DenseTuple<V, N> {
 }
 
 impl<K, V: Clone, const N: usize> FromEntity<K, V> for (Bitset, DenseTuple<V, N>) {
-    #[tracing::instrument(skip(keys, fields))]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(keys, fields)))]
     fn from_entity(
         keys: impl EntityKeys<Key = K>,
         fields: impl IntoIterator<Item = (K, V)>,
@@ -441,7 +448,7 @@ impl<K, V: Clone, const N: usize> FromEntity<K, V> for (Bitset, DenseTuple<V, N>
         Some((fields, DenseTuple::from_iter(smallvec)))
     }
 
-    #[tracing::instrument(skip(keys, fields))]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(keys, fields)))]
     fn from_entity_with_mut_keys(
         keys: impl MutableEntityKeys<Key = K>,
         fields: impl IntoIterator<Item = (K, V)>,

@@ -1,3 +1,4 @@
+use hashbrown::HashSet;
 use std::collections::HashMap;
 
 use crates_index::Index;
@@ -6,6 +7,7 @@ use criterion::{
 };
 use rusqlite::{params, Connection};
 use serde_json::Value;
+#[cfg(feature = "trace")]
 use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt};
 use tuplequery::datascript::{parse_clause, query, Clause, SupportedTuple, Triple, Val};
 
@@ -15,9 +17,11 @@ type DenseTuple<'a, const N: usize> = tuplequery::tuple::DenseTuple<Val<'a>, N>;
 type SparseTuple<'a, const N: usize> = tuplequery::tuple::SparseTuple<Val<'a>, N>;
 
 fn benchmark_datascript(c: &mut Criterion) {
+    #[cfg(feature = "trace")]
     let (flame_layer, guard) = tracing_flame::FlameLayer::with_file("./tracing.folded").unwrap();
-
+    #[cfg(feature = "trace")]
     tracing_subscriber::registry().with(flame_layer).init();
+
     // crates.io benchmark.
     //
     // This benchmark fetches crates information from crates.io and finds what
@@ -27,7 +31,7 @@ fn benchmark_datascript(c: &mut Criterion) {
         let index = Index::new_cargo_default();
 
         assert!(index.exists(), "local crates.io index cannot be found");
-        //index.retrieve_or_update().unwrap();
+        index.retrieve_or_update().unwrap();
 
         // Convert index to triples.
         let mut triples = Vec::new();
@@ -45,12 +49,7 @@ fn benchmark_datascript(c: &mut Criterion) {
         for krate in &crates {
             let entity = entity_id_by_crate_name[krate.name()];
 
-            triple(
-                &mut triples,
-                entity,
-                "name",
-                Val::Str(krate.name().to_string().into()),
-            );
+            triple(&mut triples, entity, "name", Val::Str(krate.name()));
 
             let version = krate.latest_version();
 
@@ -178,6 +177,7 @@ fn benchmark_datascript(c: &mut Criterion) {
                         WHERE
                             crate.name = \"ripgrep\"
                     ").unwrap();
+                    let mut strings = HashSet::<String>::new();
 
                     let results = stmt
                         .query_map([], |row| {
@@ -185,13 +185,13 @@ fn benchmark_datascript(c: &mut Criterion) {
                                 Val::Entity(row.get(0)?),
                                 Val::Entity(row.get(1)?),
                                 Val::Entity(row.get(2)?),
-                                Val::Str(std::borrow::Cow::Owned(row.get(3)?)),
+                                Val::Str(unsafe { &*((strings.get_or_insert_owned(row.get_ref(3)?.as_str()?)).as_str() as *const str) }),
                             ])
                         })
                         .unwrap()
                         .collect::<Vec<_>>();
 
-                    eprintln!("sqlite: {} results", results.len());
+                    criterion::black_box(results);
                 })
             });
         }
@@ -201,6 +201,7 @@ fn benchmark_datascript(c: &mut Criterion) {
         group.finish();
     }
 
+    #[cfg(feature = "trace")]
     drop(guard);
 }
 
@@ -208,7 +209,7 @@ fn triple<'a>(triples: &mut Vec<Triple<'a>>, entity: usize, prop: &'static str, 
     triples.push([Val::Entity(entity), Val::Str(prop.into()), value]);
 }
 
-fn clauses(clauses: &[&'static str]) -> Vec<Clause> {
+fn clauses(clauses: &[&'static str]) -> Vec<Clause<'static>> {
     clauses
         .iter()
         .copied()
@@ -224,9 +225,9 @@ fn bench_query_all<'a>(
 ) {
     bench_query::<HeapVec>(group, "vec", clauses, triples);
 
-    bench_query::<SmallVec<3>>(group, "smallvec_3", clauses, triples);
-    bench_query::<DenseTuple<3>>(group, "dense_tuple_3", clauses, triples);
-    bench_query::<SparseTuple<3>>(group, "sparse_tuple_3", clauses, triples);
+    bench_query::<SmallVec<4>>(group, "smallvec_4", clauses, triples);
+    bench_query::<DenseTuple<4>>(group, "dense_tuple_4", clauses, triples);
+    bench_query::<SparseTuple<4>>(group, "sparse_tuple_4", clauses, triples);
 
     // bench_query::<SmallVec<8>>(group, "smallvec_8", clauses, triples);
     // bench_query::<DenseTuple<8>>(group, "dense_tuple_8", clauses, triples);
@@ -236,7 +237,7 @@ fn bench_query_all<'a>(
 fn bench_query<'a, T: SupportedTuple<'a>>(
     group: &mut BenchmarkGroup<WallTime>,
     id: &'static str,
-    clauses: &[Clause],
+    clauses: &[Clause<'a>],
     triples: &[Triple<'a>],
 ) {
     let show_results = false;
@@ -253,6 +254,8 @@ fn bench_query<'a, T: SupportedTuple<'a>>(
                     .collect::<Vec<_>>();
 
                 eprintln!("{}", Value::Array(results).to_string());
+            } else {
+                criterion::black_box(results);
             }
         })
     });

@@ -322,8 +322,59 @@ impl Bitset {
 
     /// Returns an iterator over the indices of the 1s in the bitset. See
     /// [`into_iter`] for more details.
-    pub fn iter(&self) -> Iter {
-        self.clone().into_iter()
+    ///
+    /// # Example
+    /// ```
+    /// # use tuplequery::bitset;
+    /// let bitset = bitset![0 0 1 0 1];
+    ///
+    /// assert_eq!(bitset.iter().collect::<Vec<_>>(), vec![2, 4]);
+    /// ```
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self)))]
+    pub fn iter(&self) -> impl Iterator<Item = usize> {
+        let mut v = SmallVec::<[usize; 8]>::new();
+        let mut i = 0;
+
+        for bits in &self.0 {
+            let mut bits = *bits;
+
+            while bits != 0 {
+                let t = bits.trailing_zeros();
+
+                v.push(i + t as usize);
+                bits &= !(1 << t);
+            }
+
+            i += Bitset::BITS;
+        }
+
+        v.into_iter()
+    }
+
+    /// Calls the given function for each index where the bit is 1 in the
+    /// bitset.
+    #[inline]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self, f)))]
+    pub fn for_each(&self, mut f: impl FnMut(usize) -> bool) -> bool {
+        let mut i = 0;
+
+        for bits in &self.0 {
+            let mut bits = *bits;
+
+            while bits != 0 {
+                let t = bits.trailing_zeros();
+
+                if !f(i + t as usize) {
+                    return false;
+                }
+
+                bits &= !(1 << t);
+            }
+
+            i += Bitset::BITS;
+        }
+
+        true
     }
 
     /// Returns an iterator where each item is a triple
@@ -342,8 +393,8 @@ impl Bitset {
     /// ```
     pub fn iter_both(&self, other: &Self) -> IterBoth {
         IterBoth {
-            a: self.iter(),
-            b: other.iter(),
+            a: self.clone().into_iter(),
+            b: other.clone().into_iter(),
         }
     }
 
@@ -556,6 +607,7 @@ impl Iter {
 impl Iterator for Iter {
     type Item = usize;
 
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self)))]
     fn next(&mut self) -> Option<Self::Item> {
         let mut index = 0;
 
@@ -599,6 +651,7 @@ pub struct IterBoth {
 impl Iterator for IterBoth {
     type Item = (usize, bool, bool);
 
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self)))]
     fn next(&mut self) -> Option<Self::Item> {
         let a_next = self.a.peek_next();
         let b_next = self.b.peek_next();

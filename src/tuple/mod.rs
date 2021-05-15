@@ -332,6 +332,8 @@ macro_rules! impl_tuple_for {
             fn merge(&mut self, other: &Self, _self_fields: &Self::FieldSet, _other_fields: &Self::FieldSet) {
                 for (i, v) in other.iter().enumerate().filter_map(|(i, x)| Some((i, x.as_ref()?))) {
                     if self.len() <= i {
+                        self.reserve(i + 1);
+
                         while self.len() < i {
                             self.push(None);
                         }
@@ -346,6 +348,8 @@ macro_rules! impl_tuple_for {
             fn merge_owned(&mut self, other: Self, _self_fields: &Self::FieldSet, _other_fields: &Self::FieldSet) {
                 for (i, v) in other.into_iter().enumerate().filter_map(|(i, x)| Some((i, x?))) {
                     if self.len() <= i {
+                        self.reserve(i + 1);
+
                         while self.len() < i {
                             self.push(None);
                         }
@@ -413,7 +417,7 @@ macro_rules! impl_tuple_for {
             fn hash<H: std::hash::Hasher>(&self, fields: &Self::FieldSet, hasher: &mut H) {
                 debug_assert!(self.fieldset().is_superset(fields));
 
-                fields.iter().for_each(|i| std::hash::Hash::hash(&self[i], hasher))
+                fields.for_each(|i| { std::hash::Hash::hash(&self[i], hasher); true });
             }
         }
 

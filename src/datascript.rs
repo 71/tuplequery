@@ -6,8 +6,7 @@
 //! [DataScript](https://github.com/tonsky/datascript), which is itself
 //! inspired by [Datomic](https://www.datomic.com)'s.
 use std::{
-    borrow::Cow, collections::HashMap, convert::TryInto, error::Error, hash::Hash,
-    iter::FromIterator, usize,
+    collections::HashMap, convert::TryInto, error::Error, hash::Hash, iter::FromIterator, usize,
 };
 
 use crate::{
@@ -38,12 +37,12 @@ pub fn parse_clause(input: &str) -> Result<Clause, Box<dyn Error>> {
 
 /// Runs a query built on the given clauses using the given triples.
 pub fn query<'a, T: SupportedTuple<'a>>(
-    clauses: Vec<Clause>,
+    clauses: Vec<Clause<'a>>,
     triples: &[Triple<'a>],
-) -> Result<(Vec<T>, Query<T>, HashMap<String, usize>), Box<dyn Error>> {
+) -> Result<(Vec<T>, Query<T>, HashMap<&'a str, usize>), Box<dyn Error>> {
     // Build clauses.
     let mut relations = Vec::with_capacity(clauses.len());
-    let mut variables = HashMap::<String, usize>::new();
+    let mut variables = HashMap::new();
 
     for clause in clauses {
         let relation = match clause {
@@ -145,13 +144,13 @@ pub trait SupportedTuple<'a>:
     fn assign_at(&mut self, index: usize, self_fields: &Bitset, value: Val<'a>);
     fn value_at(&self, index: usize, self_fields: &Bitset) -> Option<&Val<'a>>;
 
-    fn to_json(mut self, self_fields: &Bitset, variables: &HashMap<String, usize>) -> Value {
+    fn to_json(mut self, self_fields: &Bitset, variables: &HashMap<&'a str, usize>) -> Value {
         let result = Value::Object(
             variables
                 .iter()
                 .map(|(name, idx)| {
                     (
-                        name.to_owned(),
+                        name.to_string(),
                         self.value_at(*idx, self_fields).unwrap().clone().to_json(),
                     )
                 })
@@ -225,13 +224,13 @@ impl<'a> SupportedTuple<'a> for Vec<Option<Val<'a>>> {
 
 /// A built [`Clause`] with variables resolved to numbers, triples converted to
 /// [`DenseTuple`]s, and clause [`Bitset`]s resolved.
-enum BuiltClause<T> {
-    Assign(usize, Bitset, Expr),
+enum BuiltClause<'a, T> {
+    Assign(usize, Bitset, Expr<'a>),
     Triples(Vec<T>, Bitset),
-    Where(Expr, Bitset),
+    Where(Expr<'a>, Bitset),
 }
 
-impl<'a, T: SupportedTuple<'a>> crate::Clause<T> for BuiltClause<T> {
+impl<'a, T: SupportedTuple<'a>> crate::Clause<T> for BuiltClause<'a, T> {
     fn input_variables(&self) -> Bitset {
         match self {
             BuiltClause::Assign(_, vars, _) => vars.clone(),
@@ -293,7 +292,7 @@ impl<'a, T: SupportedTuple<'a>> crate::Clause<T> for BuiltClause<T> {
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum Val<'a> {
     Entity(usize),
-    Str(Cow<'a, str>),
+    Str(&'a str),
     Num(f64),
     Null,
     Bool(bool),
@@ -366,7 +365,7 @@ fn write_value_to_triples<'a>(
         Value::Null => triples.push([entity, prop, Val::Null]),
         Value::Bool(bool) => triples.push([entity, prop, Val::Bool(*bool)]),
         Value::Number(number) => triples.push([entity, prop, Val::Num(number.as_f64().unwrap())]),
-        Value::String(string) => triples.push([entity, prop, Val::Str(Cow::Borrowed(string))]),
+        Value::String(string) => triples.push([entity, prop, Val::Str(string)]),
         Value::Array(array) => {
             let array_entity = Val::Entity(triples.len());
 
@@ -382,12 +381,7 @@ fn write_value_to_triples<'a>(
             triples.push([entity, prop, object_entity.clone()]);
 
             for (k, v) in object {
-                write_value_to_triples(
-                    object_entity.clone(),
-                    Val::Str(Cow::Borrowed(k)),
-                    v,
-                    triples,
-                );
+                write_value_to_triples(object_entity.clone(), Val::Str(k), v, triples);
             }
         }
     }
@@ -397,7 +391,7 @@ fn write_value_to_triples<'a>(
 /// that object and that can be queried, and writes them to the given vector.
 pub fn value_to_triples<'a>(value: &'a Value) -> Vec<Triple<'a>> {
     let root = Val::Entity(0);
-    let root_prop = Val::Str("root".into());
+    let root_prop = Val::Str("root");
 
     let mut triples = Vec::new();
 
@@ -408,19 +402,19 @@ pub fn value_to_triples<'a>(value: &'a Value) -> Vec<Triple<'a>> {
 
 /// An expression in a [`Clause`].
 #[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
-    Eq(Box<Expr>, Box<Expr>),
-    Var(String, usize),
+pub enum Expr<'a> {
+    Eq(Box<Expr<'a>>, Box<Expr<'a>>),
+    Var(&'a str, usize),
     Bool(bool),
     Num(f64),
-    Str(String),
+    Str(&'a str),
 }
 
-impl Expr {
-    fn assign_variables(&mut self, variables: &mut HashMap<String, usize>, bitset: &mut Bitset) {
+impl<'a> Expr<'a> {
+    fn assign_variables(&mut self, variables: &mut HashMap<&'a str, usize>, bitset: &mut Bitset) {
         match self {
             Expr::Var(str, idx) => {
-                *idx = variables.find_index_or_insert(str.clone());
+                *idx = variables.find_index_or_insert(*str);
                 bitset.on(*idx);
             }
             Expr::Eq(lhs, rhs) => {
@@ -431,32 +425,32 @@ impl Expr {
         }
     }
 
-    fn eval<'a, T: SupportedTuple<'a>>(&self, tuple: &T, fields: &Bitset) -> Val<'a> {
+    fn eval<T: SupportedTuple<'a>>(&self, tuple: &T, fields: &Bitset) -> Val<'a> {
         match self {
             Expr::Eq(a, b) => Val::Bool(a.eval(tuple, fields) == b.eval(tuple, fields)),
             Expr::Var(_, i) => tuple.value_at(*i, fields).unwrap().clone(),
             Expr::Bool(v) => Val::Bool(*v),
             Expr::Num(v) => Val::Num(*v),
-            Expr::Str(v) => Val::Str(Cow::Owned(v.clone())),
+            Expr::Str(v) => Val::Str(v),
         }
     }
 }
 
 /// A pattern to match on in a [`Clause::Triple`].
 #[derive(Debug, Clone)]
-pub enum Pat {
-    Var(String),
+pub enum Pat<'a> {
+    Var(&'a str),
     EqBool(bool),
     EqNum(f64),
-    EqStr(String),
+    EqStr(&'a str),
 }
 
 /// A clause of a query.
 #[derive(Debug, Clone)]
-pub enum Clause {
-    Triple([Pat; 3]),
-    Assign(String, Expr),
-    Where(Expr),
+pub enum Clause<'a> {
+    Triple([Pat<'a>; 3]),
+    Assign(&'a str, Expr<'a>),
+    Where(Expr<'a>),
 }
 
 /// Parses whitespace characters.
@@ -545,8 +539,8 @@ fn expr(input: &str) -> IResult<&str, Expr> {
         named_fn("eq", |[a, b]| Expr::Eq(Box::new(a), Box::new(b))),
         map(bool, Expr::Bool),
         map(num, Expr::Num),
-        map(str, |x| Expr::Str(x.to_string())),
-        map(var, |x| Expr::Var(x.to_string(), 0)),
+        map(str, |x| Expr::Str(x)),
+        map(var, |x| Expr::Var(x, 0)),
     ))(input)
 }
 
@@ -562,8 +556,8 @@ fn pat(input: &str) -> IResult<&str, Pat> {
     alt((
         map(bool, Pat::EqBool),
         map(num, Pat::EqNum),
-        map(str, |x| Pat::EqStr(x.to_string())),
-        map(var, |x| Pat::Var(x.to_string())),
+        map(str, |x| Pat::EqStr(x)),
+        map(var, |x| Pat::Var(x)),
     ))(input)
 }
 
@@ -601,9 +595,7 @@ fn clause(input: &str) -> IResult<&str, Clause> {
 
     alt((
         map(preceded(tag("where"), preceded(ws, expr)), Clause::Where),
-        map(assign, |(name, expr)| {
-            Clause::Assign(name.to_string(), expr)
-        }),
+        map(assign, |(name, expr)| Clause::Assign(name, expr)),
         map(triple, Clause::Triple),
     ))(input)
 }

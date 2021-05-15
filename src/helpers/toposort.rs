@@ -6,7 +6,10 @@ use std::mem::MaybeUninit;
 ///
 /// If there is a cycle in the edges, returns the index of one of the items
 /// that belongs to the cycle.
-#[tracing::instrument(skip(items, is_edge_from))]
+#[cfg_attr(
+    feature = "trace",
+    cfg_attr(feature = "trace", tracing::instrument(skip(items, is_edge_from)))
+)]
 pub fn toposort<T>(items: Vec<T>, is_edge_from: impl Fn(&T, &T) -> bool) -> Result<Vec<T>, usize> {
     // Over the execution of `toposort_visit`, we move all items out of
     // `items`. We need to keep their indices consistent througout the

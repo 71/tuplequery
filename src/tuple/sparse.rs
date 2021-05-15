@@ -243,7 +243,10 @@ impl<T: Clone + std::hash::Hash, const N: usize> HashTuple for SparseTuple<T, N>
     fn hash<H: std::hash::Hasher>(&self, fields: &Self::FieldSet, hasher: &mut H) {
         self.1.check_fields_subset(fields);
 
-        fields.iter().for_each(|i| self.get(fields, i).hash(hasher));
+        fields.for_each(|i| {
+            self.get(fields, i).hash(hasher);
+            true
+        });
     }
 }
 

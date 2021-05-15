@@ -38,6 +38,7 @@ impl<
     > Join<T, P, I1, I2> for Hash
 {
     type Iter = HashJoin<T, P, I2>;
+    type IterSame = HashJoin<T, P, I1>;
     type ProductIter = HashJoin<T, P, Product<T, P>>;
 
     fn join(
@@ -49,6 +50,21 @@ impl<
         pool: P,
     ) -> Self::Iter {
         HashJoin::with_pool(iter1, iter2, fields1, fields2, pool)
+    }
+
+    fn join_same(
+        &self,
+        iter1: I1,
+        iter2: I1,
+        fields1: T::FieldSet,
+        fields2: T::FieldSet,
+        pool: P,
+    ) -> Self::IterSame {
+        if iter1.size_hint().0 > iter2.size_hint().0 {
+            HashJoin::with_pool(iter2, iter1, fields2, fields1, pool)
+        } else {
+            HashJoin::with_pool(iter1, iter2, fields1, fields2, pool)
+        }
     }
 
     fn join_product(
@@ -104,6 +120,10 @@ impl<T: EqTuple + HashTuple + CloneTuple, I: Iterator<Item = T>> HashJoin<T, (),
 impl<T: EqTuple + HashTuple, P: TuplePool<T>, I: Iterator<Item = T>> HashJoin<T, P, I> {
     /// Same as [`Self::new`], but also allows an explicit [`TuplePool`] to be
     /// given.
+    #[cfg_attr(
+        feature = "trace",
+        tracing::instrument(skip(hash_iter, lazy_iter, hash_fields, lazy_fields, pool))
+    )]
     pub fn with_pool(
         hash_iter: impl IntoIterator<Item = T>,
         lazy_iter: impl IntoIterator<IntoIter = I>,
@@ -248,7 +268,7 @@ impl<T: EqTuple + HashTuple, P: TuplePool<T>, I: Iterator<Item = T>> Iterator
 {
     type Item = T;
 
-    #[tracing::instrument(skip(self))]
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self)))]
     fn next(&mut self) -> Option<Self::Item> {
         // (Explicit tail recursion.)
         loop {
@@ -295,6 +315,8 @@ impl<T: EqTuple + HashTuple, P: TuplePool<T>, I: Iterator<Item = T>> Iterator
 
                 self.pool
                     .return_tuple(previous_iter_curr, &self.iter_fields);
+            } else {
+                self.pool.return_tuple(iter_value, &self.iter_fields);
             }
 
             // Note: if there is no corresponding entry, we will simply loop
@@ -365,6 +387,7 @@ impl<T: EqTuple + HashTuple, P: Clone + TuplePool<T>, I: Clone + Iterator<Item =
 }
 
 impl<T: Tuple, P: TuplePool<T>, I: Iterator<Item = T>> Drop for HashJoin<T, P, I> {
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self)))]
     fn drop(&mut self) {
         if !self.hashmap.is_empty() {
             // SAFETY: if the hashmap is non-empty, `iter_curr` was
@@ -379,6 +402,14 @@ impl<T: Tuple, P: TuplePool<T>, I: Iterator<Item = T>> Drop for HashJoin<T, P, I
                 for tuple in vec {
                     self.pool.return_tuple(tuple, &self.hash_fields);
                 }
+            }
+
+            while let Some(tuple) = self.hash_curr.next() {
+                self.pool.return_tuple(tuple, &self.hash_fields);
+            }
+
+            while let Some(tuple) = self.iter.next() {
+                self.pool.return_tuple(tuple, &self.iter_fields);
             }
         }
     }
@@ -442,6 +473,7 @@ impl<T: EqTuple> PartialEq for HashJoinKey<T> {
 impl<T: EqTuple> Eq for HashJoinKey<T> {}
 
 impl<T: HashTuple> std::hash::Hash for HashJoinKey<T> {
+    #[cfg_attr(feature = "trace", tracing::instrument(skip(self, state)))]
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.vec[0].hash(self.significant_fields(), state);
     }
