@@ -41,6 +41,7 @@ pub fn query<'a, T: SupportedTuple<'a>>(
     triples: &[Triple<'a>],
 ) -> Result<(Vec<T>, Query<T>, HashMap<&'a str, usize>), Box<dyn Error>> {
     // Build clauses.
+    let time = std::time::Instant::now();
     let mut relations = Vec::with_capacity(clauses.len());
     let mut variables = HashMap::new();
 
@@ -129,11 +130,19 @@ pub fn query<'a, T: SupportedTuple<'a>>(
         relations.push(relation);
     }
 
+    let query_prepare = time.elapsed();
+
     // Build query.
+    let time = std::time::Instant::now();
     let query = Query::new::<BuiltClause<T>, _, _>(relations.iter())?;
+    let query_create = time.elapsed();
 
     // Run query.
+    let time = std::time::Instant::now();
     let results = query.run(relations, crate::Hash::new())?.collect();
+    let query_results = time.elapsed();
+
+    eprintln!("query times: prepare: {:?}, create: {:?}, run: {:?}", query_prepare, query_create, query_results);
 
     Ok((results, query, variables))
 }
