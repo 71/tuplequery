@@ -4,18 +4,22 @@
 //!
 //! See the [`crate::datascript`] module for more information.
 
-use std::error::Error;
+use std::{borrow::Cow, convert::TryInto, error::Error};
 
 use serde_json::Value;
-use tuplequery::{
-    datascript::{parse_clause, query, value_to_triples, SupportedTuple},
-    tuple::DenseTuple,
-};
+use tuplequery::{datascript::{SupportedTuple, Val, parse_clause, query, value_to_triples}, tuple::DenseTuple};
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Parse clauses from command line.
-    let clauses = std::env::args()
-        .skip(1)
+    let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut read_csv = false;
+
+    if args[0] == "--csv" {
+        read_csv = true;
+        args.remove(0);
+    }
+
+    let clauses = args.into_iter()
         .map(|x| parse_clause(&x))
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -35,11 +39,28 @@ EXAMPLE:
         std::process::exit(1);
     }
 
-    // Parse input object from stdin.
-    let value = serde_json::from_reader(std::io::stdin())?;
+    // Parse input triples from stdin.
+    #[allow(unused_assignments)]  // Needed to extend lifetime of value.
+    let mut value = None;
 
-    // Convert input object into triples.
-    let triples = value_to_triples(&value);
+    let triples = if read_csv {
+        let mut records = Vec::new();
+        let mut reader = csv::Reader::from_reader(std::io::stdin());
+
+        for (i, record) in reader.records().enumerate() {
+            let record = record?.into_iter().map(|x| Val::Str(Cow::Owned(x.to_string()))).collect::<Vec<_>>();
+            let record_len = record.len();
+
+            records.push(record.try_into().map_err(move |_| format!("expected record #{} to have 3 values; it had {}", i, record_len))?);
+        }
+
+        records
+    } else {
+        // Convert input object into triples.
+        value = Some(serde_json::from_reader(std::io::stdin())?);
+
+        value_to_triples(value.as_ref().unwrap())
+    };
 
     // Run query.
     let (results, query, variables) = query::<DenseTuple<_, 3>>(clauses, &triples)?;

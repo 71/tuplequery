@@ -168,6 +168,7 @@ impl<T: Tuple, P: TuplePool<T>> Iterator for Product<T, P> {
 
     /// Returns the next result of the product. For a guided explanation of how
     /// this function works, see [`tests::test_guided`].
+    #[tracing::instrument(skip(self))]
     fn next(&mut self) -> Option<Self::Item> {
         debug_assert_eq!(self.relations.len(), self.indices.len());
 

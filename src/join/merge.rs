@@ -126,6 +126,7 @@ impl<T: OrdTuple, P: TuplePool<T>, I1: Iterator<Item = T>, I2: Iterator<Item = T
 {
     type Item = T;
 
+    #[tracing::instrument(skip(self))]
     fn next(&mut self) -> Option<Self::Item> {
         // If some values are pending, return their cartesian product.
         if let Some(pending1) = self.pending1.last() {

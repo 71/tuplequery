@@ -248,6 +248,7 @@ impl<T: EqTuple + HashTuple, P: TuplePool<T>, I: Iterator<Item = T>> Iterator
 {
     type Item = T;
 
+    #[tracing::instrument(skip(self))]
     fn next(&mut self) -> Option<Self::Item> {
         // (Explicit tail recursion.)
         loop {
