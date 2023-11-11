@@ -1,6 +1,6 @@
 #![cfg_attr(
     not(feature = "use_hashbrown"),
-    feature(hash_drain_filter, hash_raw_entry, hash_set_entry)
+    feature(hash_raw_entry, hash_set_entry)
 )]
 
 pub mod clause;

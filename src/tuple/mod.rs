@@ -503,11 +503,11 @@ impl<K: Clone + Eq + std::hash::Hash, V: Clone + Eq> FieldSet for HashMap<K, V> 
     }
 
     fn intersect_in_place(&mut self, other: &Self) {
-        self.drain_filter(move |k, _| !other.contains_key(k));
+        self.retain(move |k, _| other.contains_key(k));
     }
 
     fn difference_in_place(&mut self, other: &Self) {
-        self.drain_filter(move |k, _| other.contains_key(k));
+        self.retain(move |k, _| !other.contains_key(k));
     }
 
     fn intersects(&self, other: &Self) -> bool {
@@ -532,11 +532,11 @@ impl<K: Clone + Eq + std::hash::Hash> FieldSet for HashSet<K> {
     }
 
     fn intersect_in_place(&mut self, other: &Self) {
-        self.drain_filter(move |k| !other.contains(k));
+        self.retain(move |k| other.contains(k));
     }
 
     fn difference_in_place(&mut self, other: &Self) {
-        self.drain_filter(move |k| other.contains(k));
+        self.retain(move |k| !other.contains(k));
     }
 
     fn intersects(&self, other: &Self) -> bool {
